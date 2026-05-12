@@ -1,1 +1,1 @@
-# C-_Based_GPT2
+# C++_Based_GPT2
