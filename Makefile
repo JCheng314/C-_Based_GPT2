@@ -2,7 +2,7 @@ CXX = g++
 NVCC = nvcc
 
 CXXFLAGS = -O3 -Wall -std=c++17
-NVCCFLAGS = -O3 -arch=sm_80 -std=c++17
+NVCCFLAGS = -O3 -arch=sm_60 -std=c++17
 
 INCLUDES = -I./include
 SRC_DIR = src

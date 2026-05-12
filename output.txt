@@ -1,0 +1,26 @@
+========================================
+  GPT-2 Kernel Benchmark & Validation   
+========================================
+
+[1] GEMM Kernel (128x256x128)
+    Correctness: PASS
+    Time:        0.0629 ms
+    Performance: 133.33 GFLOPS
+
+[2] LayerNorm Benchmark (B=16, T=1024, C=768)
+    [Baseline 32-bit]
+      Correctness: PASS
+      Time:        0.3290 ms
+      Bandwidth:   305.99 GB/s
+    [Vectorized float4]
+      Correctness: PASS
+      Time:        0.2510 ms
+      Bandwidth:   401.09 GB/s
+      Speedup:     1.31x
+
+[3] Tiled Flash Attention (B=2, NH=12, T=1024, HS=64)
+    Correctness: PASS
+    Time:        95.6441 ms
+    Performance: 33.68 GFLOPS (approx)
+Starting GPT-2 Kernel Benchmark. Outputting to output.txt...
+Done! Please check output.txt for the full report.

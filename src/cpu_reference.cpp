@@ -1,5 +1,6 @@
 #include <cmath>
 #include <iostream>
+#include <vector>
 
 void cpu_gemm(const float* A, const float* W, float* C, int M, int K, int N) {
     for (int i = 0; i < M; ++i) {
