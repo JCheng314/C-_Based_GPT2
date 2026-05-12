@@ -328,3 +328,123 @@ __global__ void simple_fused_attention_kernel(
         out[out_idx] = acc;
     }
 }
+
+
+// ============================================================
+// 19. Tiled Flash Attention
+// Supports large T by tiling over the Key/Value sequence.
+// ============================================================
+__global__ void tiled_flash_attention_kernel(
+    const float* Q,
+    const float* K,
+    const float* V,
+    float* out,
+    int B, int NH, int T, int HS
+) {
+    // blockIdx.x = query position i
+    // blockIdx.y = head h
+    // blockIdx.z = batch b
+    // blockDim.x = HS (number of threads = head size, e.g. 64)
+
+    int i = blockIdx.x;
+    int h = blockIdx.y;
+    int b = blockIdx.z;
+    int tid = threadIdx.x; // maps to dimension d (0 to HS-1)
+
+    if (i >= T || b >= B || h >= NH || tid >= HS) return;
+
+    // We process the keys/values in tiles of size Bc
+    int Bc = 32; // Hardcoded tile size for keys/values
+    
+    // Shared memory for Q, K_tile, V_tile
+    extern __shared__ float shared[];
+    float* s_Q = shared;                 // [HS]
+    float* s_K = shared + HS;            // [Bc * HS]
+    float* s_V = shared + HS + Bc * HS;  // [Bc * HS]
+    float* s_scores = shared + HS + 2 * Bc * HS; // [Bc]
+
+    // Load Query vector into shared memory
+    s_Q[tid] = Q[((b * NH + h) * T + i) * HS + tid];
+    __syncthreads();
+
+    float m_i = -FLT_MAX;
+    float l_i = 0.0f;
+    float o_i = 0.0f; // Accumulator for this thread's output feature (d)
+
+    float scale = rsqrtf((float)HS);
+
+    // Loop over Key/Value tiles
+    for (int j_start = 0; j_start <= i; j_start += Bc) {
+        int tile_size = min(Bc, i - j_start + 1);
+
+        // Load K and V tiles into shared memory cooperatively
+        // Each thread loads elements across the tile
+        for (int step = 0; step < tile_size; ++step) {
+            int j = j_start + step;
+            s_K[step * HS + tid] = K[((b * NH + h) * T + j) * HS + tid];
+            s_V[step * HS + tid] = V[((b * NH + h) * T + j) * HS + tid];
+        }
+        __syncthreads();
+
+        // Compute scores for this tile
+        // Thread 0 computes the dot products to avoid race conditions on s_scores, 
+        // or we could parallelize reduction. For simplicity and correctness in this block:
+        if (tid == 0) {
+            for (int step = 0; step < tile_size; ++step) {
+                float acc = 0.0f;
+                for (int d = 0; d < HS; ++d) {
+                    acc += s_Q[d] * s_K[step * HS + d];
+                }
+                s_scores[step] = acc * scale;
+            }
+        }
+        __syncthreads();
+
+        // Find local max and update global m_i, l_i
+        float m_ij = -FLT_MAX;
+        if (tid == 0) {
+            for (int step = 0; step < tile_size; ++step) {
+                m_ij = fmaxf(m_ij, s_scores[step]);
+            }
+        }
+        // Broadcast m_ij to all threads
+        __shared__ float s_m_ij;
+        __shared__ float s_l_ij;
+        if (tid == 0) s_m_ij = m_ij;
+        __syncthreads();
+        m_ij = s_m_ij;
+
+        float m_i_new = fmaxf(m_i, m_ij);
+
+        // Compute local exp sum
+        float l_ij = 0.0f;
+        if (tid == 0) {
+            for (int step = 0; step < tile_size; ++step) {
+                s_scores[step] = expf(s_scores[step] - m_i_new);
+                l_ij += s_scores[step];
+            }
+            s_l_ij = l_ij;
+        }
+        __syncthreads();
+        l_ij = s_l_ij;
+
+        // Update global l_i
+        float l_i_new = expf(m_i - m_i_new) * l_i + l_ij;
+
+        // Update output accumulator
+        float o_i_new = expf(m_i - m_i_new) * o_i;
+        for (int step = 0; step < tile_size; ++step) {
+            o_i_new += s_scores[step] * s_V[step * HS + tid];
+        }
+
+        // Commit updates for next tile
+        m_i = m_i_new;
+        l_i = l_i_new;
+        o_i = o_i_new;
+        
+        __syncthreads();
+    }
+
+    // Final normalization
+    out[((b * NH + h) * T + i) * HS + tid] = o_i / l_i;
+}

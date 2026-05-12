@@ -62,6 +62,10 @@ __global__ void layernorm_forward_kernel(
     const float* x, const float* gamma, const float* beta,
     float* out, int B, int T, int C, float eps);
 
+__global__ void layernorm_forward_kernel_float4(
+    const float* x, const float* gamma, const float* beta,
+    float* out, int B, int T, int C, float eps);
+
 __global__ void residual_layernorm_kernel(
     const float* x, const float* residual, const float* gamma, const float* beta,
     float* out, int B, int T, int C, float eps);
@@ -88,6 +92,10 @@ __global__ void attention_value_kernel(
     int B, int NH, int T, int HS);
 
 __global__ void simple_fused_attention_kernel(
+    const float* Q, const float* K, const float* V, float* out,
+    int B, int NH, int T, int HS);
+
+__global__ void tiled_flash_attention_kernel(
     const float* Q, const float* K, const float* V, float* out,
     int B, int NH, int T, int HS);
 

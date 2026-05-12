@@ -51,3 +51,45 @@ void cpu_layernorm(const float* x, const float* gamma, const float* beta, float*
         }
     }
 }
+
+void cpu_attention(const float* Q, const float* K, const float* V, float* out, int B, int NH, int T, int HS) {
+    for (int b = 0; b < B; ++b) {
+        for (int h = 0; h < NH; ++h) {
+            for (int i = 0; i < T; ++i) { // Query position
+                float max_score = -1e20f;
+                std::vector<float> scores(T, -1e20f);
+                
+                // Q * K^T
+                for (int j = 0; j <= i; ++j) { // Key position (causal mask)
+                    float acc = 0.0f;
+                    for (int d = 0; d < HS; ++d) {
+                        int q_idx = ((b * NH + h) * T + i) * HS + d;
+                        int k_idx = ((b * NH + h) * T + j) * HS + d;
+                        acc += Q[q_idx] * K[k_idx];
+                    }
+                    float score = acc / std::sqrt(static_cast<float>(HS));
+                    scores[j] = score;
+                    if (score > max_score) max_score = score;
+                }
+                
+                // Softmax
+                float denom = 0.0f;
+                for (int j = 0; j <= i; ++j) {
+                    scores[j] = std::exp(scores[j] - max_score);
+                    denom += scores[j];
+                }
+                
+                // probs * V
+                for (int d = 0; d < HS; ++d) {
+                    float out_val = 0.0f;
+                    for (int j = 0; j <= i; ++j) {
+                        int v_idx = ((b * NH + h) * T + j) * HS + d;
+                        out_val += (scores[j] / denom) * V[v_idx];
+                    }
+                    int out_idx = ((b * NH + h) * T + i) * HS + d;
+                    out[out_idx] = out_val;
+                }
+            }
+        }
+    }
+}
