@@ -1,4 +1,8 @@
 # .gitignore
 
 data/
+<<<<<<< HEAD
 *.txt
+=======
+*.txt
+>>>>>>> 9af38f7454ff4c04a77166bc7ff75dcefeae4273

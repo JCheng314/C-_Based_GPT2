@@ -99,4 +99,75 @@ __global__ void tiled_flash_attention_kernel(
     const float* Q, const float* K, const float* V, float* out,
     int B, int NH, int T, int HS);
 
+// ============================================================
+// Backward kernels: backward_kernels.cu
+// ============================================================
+
+__global__ void zero_kernel(float* x, int N);
+
+__global__ void cross_entropy_forward_kernel(
+    const float* logits,
+    const int* targets,
+    float* losses,
+    int M,
+    int V
+);
+
+__global__ void cross_entropy_backward_kernel(
+    const float* logits,
+    const int* targets,
+    float* dlogits,
+    int M,
+    int V
+);
+
+__global__ void linear_backward_dA_kernel(
+    const float* dC,
+    const float* W,
+    float* dA,
+    int M,
+    int K,
+    int N
+);
+
+__global__ void linear_backward_dW_kernel(
+    const float* A,
+    const float* dC,
+    float* dW,
+    int M,
+    int K,
+    int N
+);
+
+__global__ void linear_backward_bias_kernel(
+    const float* dC,
+    float* dbias,
+    int M,
+    int N
+);
+
+__global__ void embedding_backward_kernel(
+    const int* tokens,
+    const float* dout,
+    float* dtoken_emb,
+    float* dpos_emb,
+    int B,
+    int T,
+    int C
+);
+
+__global__ void adamw_update_kernel(
+    float* param,
+    const float* grad,
+    float* m,
+    float* v,
+    int N,
+    float lr,
+    float beta1,
+    float beta2,
+    float eps,
+    float weight_decay,
+    int step
+);
+
 #endif // TRANSFORMER_KERNELS_H
