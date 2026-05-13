@@ -22,6 +22,18 @@ __device__ __forceinline__ float gelu_backward(float x) {
     return 0.5f * (1.0f + tanh_u) + 0.5f * x * sech2 * du_dx;
 }
 
+__global__ void accumulate_kernel(
+    const float* src,
+    float* dst,
+    int N
+) {
+    int idx = blockIdx.x * blockDim.x + threadIdx.x;
+
+    if (idx < N) {
+        dst[idx] += src[idx];
+    }
+}
+
 // ============================================================
 // 1. Zero kernel
 // ============================================================
@@ -453,4 +465,294 @@ __global__ void layernorm_backward_kernel(
 
         dx_row[c] += grad;
     }
+}
+
+// ============================================================
+// Merge heads backward
+//
+// forward:
+// attn_out [B,NH,T,HS] -> merged [B,T,C]
+//
+// backward:
+// dmerged [B,T,C] -> datt_out [B,NH,T,HS]
+// ============================================================
+
+__global__ void merge_heads_backward_kernel(
+    const float* dmerged,
+    float* datt_out,
+    int B,
+    int T,
+    int NH,
+    int HS
+) {
+    int C = NH * HS;
+    int idx = blockIdx.x * blockDim.x + threadIdx.x;
+    int total = B * T * C;
+
+    if (idx >= total) return;
+
+    int c = idx % C;
+    int t = (idx / C) % T;
+    int b = idx / (T * C);
+
+    int h = c / HS;
+    int hs = c % HS;
+
+    int out_idx = ((b * NH + h) * T + t) * HS + hs;
+
+    datt_out[out_idx] += dmerged[idx];
+}
+
+// ============================================================
+// Split QKV backward
+//
+// forward:
+// qkv [B,T,3C] -> Q/K/V [B,NH,T,HS]
+// ============================================================
+
+__global__ void split_qkv_backward_kernel(
+    const float* dQ,
+    const float* dK,
+    const float* dV,
+    float* dqkv,
+    int B,
+    int T,
+    int NH,
+    int HS
+) {
+    int C = NH * HS;
+    int idx = blockIdx.x * blockDim.x + threadIdx.x;
+    int total = B * T * C;
+
+    if (idx >= total) return;
+
+    int hs = idx % HS;
+    int h = (idx / HS) % NH;
+    int t = (idx / (HS * NH)) % T;
+    int b = idx / (T * NH * HS);
+
+    int c = h * HS + hs;
+    int qkv_base = (b * T + t) * (3 * C);
+
+    int q_idx = qkv_base + c;
+    int k_idx = qkv_base + C + c;
+    int v_idx = qkv_base + 2 * C + c;
+
+    int head_idx = ((b * NH + h) * T + t) * HS + hs;
+
+    dqkv[q_idx] += dQ[head_idx];
+    dqkv[k_idx] += dK[head_idx];
+    dqkv[v_idx] += dV[head_idx];
+}
+
+// ============================================================
+// dprobs = datt @ V^T
+//
+// dout:   [B,NH,T,HS]
+// V:      [B,NH,T,HS]
+// dprobs: [B,NH,T,T]
+// ============================================================
+
+__global__ void attention_dprobs_kernel(
+    const float* dout,
+    const float* V,
+    float* dprobs,
+    int B,
+    int NH,
+    int T,
+    int HS
+) {
+    int j = blockIdx.x * blockDim.x + threadIdx.x;
+    int i = blockIdx.y * blockDim.y + threadIdx.y;
+    int bh = blockIdx.z;
+
+    if (i >= T || j >= T) return;
+
+    int b = bh / NH;
+    int h = bh % NH;
+
+    float acc = 0.0f;
+
+    for (int d = 0; d < HS; ++d) {
+        int dout_idx = ((b * NH + h) * T + i) * HS + d;
+        int v_idx = ((b * NH + h) * T + j) * HS + d;
+        acc += dout[dout_idx] * V[v_idx];
+    }
+
+    int dp_idx = ((b * NH + h) * T + i) * T + j;
+    dprobs[dp_idx] += acc;
+}
+
+// ============================================================
+// dV = probs^T @ dout
+//
+// probs: [B,NH,T,T]
+// V:     [B,NH,T,HS]
+// dout:  [B,NH,T,HS]
+// dV:    [B,NH,T,HS]
+// ============================================================
+
+__global__ void attention_value_backward_kernel(
+    const float* probs,
+    const float* V,
+    const float* dout,
+    float* dprobs,
+    float* dV,
+    int B,
+    int NH,
+    int T,
+    int HS
+) {
+    int idx = blockIdx.x * blockDim.x + threadIdx.x;
+    int total = B * NH * T * HS;
+
+    if (idx >= total) return;
+
+    int d = idx % HS;
+    int i = (idx / HS) % T;
+    int h = (idx / (HS * T)) % NH;
+    int b = idx / (HS * T * NH);
+
+    // dV[b,h,j,d] += sum_i probs[b,h,i,j] * dout[b,h,i,d]
+    for (int j = 0; j < T; ++j) {
+        int p_idx = ((b * NH + h) * T + i) * T + j;
+        int dv_idx = ((b * NH + h) * T + j) * HS + d;
+        atomicAdd(&dV[dv_idx], probs[p_idx] * dout[idx]);
+    }
+}
+
+// ============================================================
+// Causal softmax backward
+//
+// dscores = softmax_backward(dprobs)
+// ============================================================
+
+__global__ void masked_softmax_backward_kernel(
+    const float* probs,
+    const float* dprobs,
+    float* dscores,
+    int B,
+    int NH,
+    int T
+) {
+    extern __shared__ float shared[];
+
+    float* s_dot = shared;
+
+    int row_idx = blockIdx.x;
+    int tid = threadIdx.x;
+
+    int total_rows = B * NH * T;
+    if (row_idx >= total_rows) return;
+
+    int i = row_idx % T;  // query position
+
+    const float* row_probs = probs + row_idx * T;
+    const float* row_dprobs = dprobs + row_idx * T;
+    float* row_dscores = dscores + row_idx * T;
+
+    // Compute dot = sum_j dprobs_j * probs_j over valid j <= i
+    float local_dot = 0.0f;
+
+    for (int j = tid; j < T; j += blockDim.x) {
+        if (j <= i) {
+            local_dot += row_dprobs[j] * row_probs[j];
+        }
+    }
+
+    s_dot[tid] = local_dot;
+    __syncthreads();
+
+    for (int stride = blockDim.x / 2; stride > 0; stride >>= 1) {
+        if (tid < stride) {
+            s_dot[tid] += s_dot[tid + stride];
+        }
+        __syncthreads();
+    }
+
+    float dot = s_dot[0];
+
+    // Softmax backward:
+    // dscores_j = probs_j * (dprobs_j - dot)
+    for (int j = tid; j < T; j += blockDim.x) {
+        if (j <= i) {
+            row_dscores[j] = row_probs[j] * (row_dprobs[j] - dot);
+        } else {
+            row_dscores[j] = 0.0f;
+        }
+    }
+}
+
+// ============================================================
+// scores = Q @ K^T / sqrt(HS)
+//
+// dQ = dscores @ K / sqrt(HS)
+// ============================================================
+
+__global__ void attention_scores_backward_dQ_kernel(
+    const float* dscores,
+    const float* K,
+    float* dQ,
+    int B,
+    int NH,
+    int T,
+    int HS
+) {
+    int d = blockIdx.x * blockDim.x + threadIdx.x;
+    int i = blockIdx.y * blockDim.y + threadIdx.y;
+    int bh = blockIdx.z;
+
+    if (i >= T || d >= HS) return;
+
+    int b = bh / NH;
+    int h = bh % NH;
+
+    float scale = rsqrtf((float)HS);
+    float acc = 0.0f;
+
+    for (int j = 0; j < T; ++j) {
+        int score_idx = ((b * NH + h) * T + i) * T + j;
+        int k_idx = ((b * NH + h) * T + j) * HS + d;
+
+        acc += dscores[score_idx] * K[k_idx];
+    }
+
+    int q_idx = ((b * NH + h) * T + i) * HS + d;
+    dQ[q_idx] = acc * scale;
+}
+
+// ============================================================
+// dK = dscores^T @ Q / sqrt(HS)
+// ============================================================
+
+__global__ void attention_scores_backward_dK_kernel(
+    const float* dscores,
+    const float* Q,
+    float* dK,
+    int B,
+    int NH,
+    int T,
+    int HS
+) {
+    int d = blockIdx.x * blockDim.x + threadIdx.x;
+    int j = blockIdx.y * blockDim.y + threadIdx.y;
+    int bh = blockIdx.z;
+
+    if (j >= T || d >= HS) return;
+
+    int b = bh / NH;
+    int h = bh % NH;
+
+    float scale = rsqrtf((float)HS);
+    float acc = 0.0f;
+
+    for (int i = 0; i < T; ++i) {
+        int score_idx = ((b * NH + h) * T + i) * T + j;
+        int q_idx = ((b * NH + h) * T + i) * HS + d;
+
+        acc += dscores[score_idx] * Q[q_idx];
+    }
+
+    int k_idx = ((b * NH + h) * T + j) * HS + d;
+    dK[k_idx] = acc * scale;
 }

@@ -261,3 +261,19 @@ __global__ void matmul_bias_residual_kernel(
     int idx = row * N + col;
     out[idx] = acc + bias[col] + residual[idx];
 }
+
+__global__ void add_bias_kernel(
+    const float* x,
+    const float* bias,
+    float* out,
+    int M,
+    int N
+) {
+    int idx = blockIdx.x * blockDim.x + threadIdx.x;
+    int total = M * N;
+
+    if (idx >= total) return;
+
+    int n = idx % N;
+    out[idx] = x[idx] + bias[n];
+}
