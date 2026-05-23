@@ -170,4 +170,15 @@ __global__ void adamw_update_kernel(
     int step
 );
 
+__global__ void add_bias_kernel(const float* x, const float* bias, float* out, int M, int N);
+__global__ void residual_add_backward_kernel(const float* dout, float* dx1, float* dx2, int N);
+__global__ void bias_gelu_backward_kernel(const float* x, const float* bias, const float* dout, float* dx, float* dbias, int M, int N);
+__global__ void layernorm_backward_kernel(const float* x, const float* gamma, const float* dout, float* dx, float* dgamma, float* dbeta, int B_T, int C, float eps);
+__global__ void merge_heads_backward_kernel(const float* dout, float* dattn_heads, int B, int T, int NH, int HS);
+__global__ void split_qkv_backward_kernel(const float* dQ, const float* dK, const float* dV, float* dqkv, int B, int T, int NH, int HS);
+__global__ void attention_value_backward_kernel(const float* probs, const float* V, const float* dout, float* dprobs, float* dV, int B, int NH, int T, int HS);
+__global__ void masked_softmax_backward_kernel(const float* probs, const float* dprobs, float* dscores, int B, int NH, int T);
+__global__ void attention_scores_backward_dQ_kernel(const float* dscores, const float* K, float* dQ, int B, int NH, int T, int HS);
+__global__ void attention_scores_backward_dK_kernel(const float* dscores, const float* Q, float* dK, int B, int NH, int T, int HS);
+
 #endif // TRANSFORMER_KERNELS_H
