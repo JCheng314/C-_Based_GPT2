@@ -1,0 +1,5 @@
+name, memory.total [MiB], clocks.max.sm [MHz], clocks.max.memory [MHz], pcie.link.gen.current, pcie.link.width.current
+Quadro RTX 6000, 23040 MiB, 2100 MHz, 7001 MHz, 3, 16
+Quadro RTX 6000, 23040 MiB, 2100 MHz, 7001 MHz, 3, 16
+Quadro RTX 6000, 23040 MiB, 2100 MHz, 7001 MHz, 1, 16
+Quadro RTX 6000, 23040 MiB, 2100 MHz, 7001 MHz, 1, 16
