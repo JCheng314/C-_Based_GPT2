@@ -115,7 +115,7 @@ static void check_cuda(cudaError_t err, const char* file, int line) {
 
 #define CUDA_CHECK(call) check_cuda((call), __FILE__, __LINE__)
 
-std::vector<uint16_t> load_tokens_u16(const std::string& filename) {
+std::vector<uint32_t> load_tokens_u32(const std::string& filename) {
     std::ifstream file(filename, std::ios::binary | std::ios::ate);
 
     if (!file.is_open()) {
@@ -126,14 +126,12 @@ std::vector<uint16_t> load_tokens_u16(const std::string& filename) {
     std::streamsize size = file.tellg();
     file.seekg(0, std::ios::beg);
 
-    if (size % sizeof(uint16_t) != 0) {
-        std::cerr << "File size is not divisible by uint16_t. "
-                  << "If your file uses int32 tokens, change the loader."
-                  << std::endl;
+    if (size % sizeof(uint32_t) != 0) {
+        std::cerr << "Token file size is not divisible by uint32_t." << std::endl;
         std::exit(1);
     }
 
-    std::vector<uint16_t> tokens(size / sizeof(uint16_t));
+    std::vector<uint32_t> tokens(size / sizeof(uint32_t));
 
     if (!file.read(reinterpret_cast<char*>(tokens.data()), size)) {
         std::cerr << "Failed to read file: " << filename << std::endl;
@@ -147,7 +145,7 @@ std::vector<uint16_t> load_tokens_u16(const std::string& filename) {
 }
 
 void get_batch(
-    const std::vector<uint16_t>& data,
+    const std::vector<uint32_t>& data,
     std::vector<int>& x,
     std::vector<int>& y,
     std::mt19937& rng
@@ -206,7 +204,7 @@ float average_loss_from_device(float* d_losses) {
 // ============================================================
 
 float estimate_loss(
-    const std::vector<uint16_t>& tokens,
+    const std::vector<uint32_t>& tokens,
     int* d_x,
     int* d_y,
     float* d_token_emb,
@@ -382,8 +380,8 @@ int main(int argc, char** argv) {
     std::string train_path = argv[1];
     std::string valid_path = argv[2];
 
-    std::vector<uint16_t> train_tokens = load_tokens_u16(train_path);
-    std::vector<uint16_t> valid_tokens = load_tokens_u16(valid_path);
+    std::vector<uint32_t> train_tokens = load_tokens_u32(train_path);
+    std::vector<uint32_t> valid_tokens = load_tokens_u32(valid_path);
 
     if (train_tokens.size() < T + 2 || valid_tokens.size() < T + 2) {
         std::cerr << "Dataset too small for T=" << T << std::endl;

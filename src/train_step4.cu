@@ -1,4 +1,5 @@
 #include "../include/transformer_kernels.h"
+#include "../include/training_support.h"
 
 #include <mpi.h>
 #include <algorithm>
@@ -128,21 +129,6 @@ dim3 grid_d_qkv_W(
 // Utility
 // ============================================================
 
-__global__ void scale_gradients_kernel(float* grad, int count, float scale) {
-    int idx = blockIdx.x * blockDim.x + threadIdx.x;
-    if (idx < count) {
-        grad[idx] *= scale;
-    }
-}
-
-void all_reduce_gradients(float* d_grad, int count, int world_size) {
-    MPI_Allreduce(MPI_IN_PLACE, d_grad, count, MPI_FLOAT, MPI_SUM, MPI_COMM_WORLD);
-    int threads = 256;
-    int blocks = (count + threads - 1) / threads;
-    scale_gradients_kernel<<<blocks, threads>>>(d_grad, count, 1.0f / world_size);
-    cudaDeviceSynchronize();
-}
-
 static void check_cuda(cudaError_t err, const char* file, int line) {
     if (err != cudaSuccess) {
         std::cerr << "CUDA error at " << file << ":" << line
@@ -153,7 +139,30 @@ static void check_cuda(cudaError_t err, const char* file, int line) {
 
 #define CUDA_CHECK(call) check_cuda((call), __FILE__, __LINE__)
 
-std::vector<uint16_t> load_tokens_u16(const std::string& filename) {
+__global__ void scale_gradients_kernel(float* grad, int count, float scale) {
+    int idx = blockIdx.x * blockDim.x + threadIdx.x;
+    if (idx < count) {
+        grad[idx] *= scale;
+    }
+}
+
+void all_reduce_gradients(float* d_grad, int count, int world_size, bool cuda_aware_mpi) {
+    if (cuda_aware_mpi) {
+        MPI_Allreduce(MPI_IN_PLACE, d_grad, count, MPI_FLOAT, MPI_SUM, MPI_COMM_WORLD);
+    } else {
+        std::vector<float> host_grad(count);
+        CUDA_CHECK(cudaMemcpy(host_grad.data(), d_grad, count * sizeof(float), cudaMemcpyDeviceToHost));
+        MPI_Allreduce(MPI_IN_PLACE, host_grad.data(), count, MPI_FLOAT, MPI_SUM, MPI_COMM_WORLD);
+        CUDA_CHECK(cudaMemcpy(d_grad, host_grad.data(), count * sizeof(float), cudaMemcpyHostToDevice));
+    }
+    int threads = 256;
+    int blocks = (count + threads - 1) / threads;
+    scale_gradients_kernel<<<blocks, threads>>>(d_grad, count, 1.0f / world_size);
+    CUDA_CHECK(cudaGetLastError());
+    CUDA_CHECK(cudaDeviceSynchronize());
+}
+
+std::vector<uint32_t> load_tokens_u32(const std::string& filename) {
     std::ifstream file(filename, std::ios::binary | std::ios::ate);
 
     if (!file.is_open()) {
@@ -164,14 +173,12 @@ std::vector<uint16_t> load_tokens_u16(const std::string& filename) {
     std::streamsize size = file.tellg();
     file.seekg(0, std::ios::beg);
 
-    if (size % sizeof(uint16_t) != 0) {
-        std::cerr << "File size is not divisible by uint16_t. "
-                  << "If your file uses int32 tokens, change the loader."
-                  << std::endl;
+    if (size % sizeof(uint32_t) != 0) {
+        std::cerr << "Token file size is not divisible by uint32_t." << std::endl;
         std::exit(1);
     }
 
-    std::vector<uint16_t> tokens(size / sizeof(uint16_t));
+    std::vector<uint32_t> tokens(size / sizeof(uint32_t));
 
     if (!file.read(reinterpret_cast<char*>(tokens.data()), size)) {
         std::cerr << "Failed to read file: " << filename << std::endl;
@@ -189,7 +196,7 @@ std::vector<uint16_t> load_tokens_u16(const std::string& filename) {
 }
 
 void get_batch(
-    const std::vector<uint16_t>& data,
+    const std::vector<uint32_t>& data,
     std::vector<int>& x,
     std::vector<int>& y,
     std::mt19937& rng
@@ -243,12 +250,23 @@ float average_loss_from_device(float* d_losses) {
     return sum / static_cast<float>(M);
 }
 
+void save_checkpoint(
+    const std::string& path,
+    int step,
+    const std::vector<DeviceTensorRef>& tensors
+);
+
+int load_checkpoint(
+    const std::string& path,
+    const std::vector<DeviceTensorRef>& tensors
+);
+
 // ============================================================
 // Forward-only validation
 // ============================================================
 
 float estimate_loss(
-    const std::vector<uint16_t>& tokens,
+    const std::vector<uint32_t>& tokens,
 
     int* d_x,
     int* d_y,
@@ -650,7 +668,7 @@ int main(int argc, char** argv) {
     cudaSetDevice(rank % num_devices);
 
     if (argc < 3) {
-        if (rank == 0) std::cerr << "Usage: ./train_step4 train.bin valid.bin" << std::endl;
+        if (rank == 0) print_runtime_usage(argv[0]);
         MPI_Finalize();
         return 1;
     }
@@ -658,8 +676,20 @@ int main(int argc, char** argv) {
     std::string train_path = argv[1];
     std::string valid_path = argv[2];
 
-    std::vector<uint16_t> train_tokens = load_tokens_u16(train_path);
-    std::vector<uint16_t> valid_tokens = load_tokens_u16(valid_path);
+    TrainingRuntimeConfig runtime;
+    try {
+        runtime = parse_runtime_config(argc, argv, 3);
+    } catch (const std::exception& ex) {
+        if (rank == 0) {
+            std::cerr << ex.what() << std::endl;
+            print_runtime_usage(argv[0]);
+        }
+        MPI_Finalize();
+        return 1;
+    }
+
+    std::vector<uint32_t> train_tokens = load_tokens_u32(train_path);
+    std::vector<uint32_t> valid_tokens = load_tokens_u32(valid_path);
 
     if (train_tokens.size() < T + 2 || valid_tokens.size() < T + 2) {
         if (rank == 0) std::cerr << "Dataset too small for T=" << T << std::endl;
@@ -1284,9 +1314,73 @@ int main(int argc, char** argv) {
     CUDA_CHECK(cudaDeviceSynchronize());
 
 
-    int max_steps = 2000;
-    int eval_every = 100;
-    int eval_iters = 10;
+    int max_steps = runtime.max_steps;
+    int eval_every = runtime.eval_every;
+    int eval_iters = runtime.eval_iters;
+
+    std::vector<DeviceTensorRef> checkpoint_tensors = {
+        {"token_emb", d_token_emb, token_emb_size},
+        {"pos_emb", d_pos_emb, pos_emb_size},
+        {"lm_w", d_lm_w, lm_w_size},
+        {"ln1_gamma", d_ln1_gamma, ln1_gamma_size},
+        {"ln1_beta", d_ln1_beta, ln1_beta_size},
+        {"qkv_w", d_qkv_w, qkv_w_size},
+        {"qkv_b", d_qkv_b, qkv_b_size},
+        {"attn_proj_w", d_attn_proj_w, attn_proj_w_size},
+        {"attn_proj_b", d_attn_proj_b, attn_proj_b_size},
+        {"ln2_gamma", d_ln2_gamma, ln2_gamma_size},
+        {"ln2_beta", d_ln2_beta, ln2_beta_size},
+        {"mlp_w1", d_mlp_w1, mlp_w1_size},
+        {"mlp_b1", d_mlp_b1, mlp_b1_size},
+        {"mlp_w2", d_mlp_w2, mlp_w2_size},
+        {"mlp_b2", d_mlp_b2, mlp_b2_size},
+        {"token_emb_m", d_token_emb_m, token_emb_size},
+        {"pos_emb_m", d_pos_emb_m, pos_emb_size},
+        {"lm_w_m", d_lm_w_m, lm_w_size},
+        {"ln1_gamma_m", d_ln1_gamma_m, ln1_gamma_size},
+        {"ln1_beta_m", d_ln1_beta_m, ln1_beta_size},
+        {"qkv_w_m", d_qkv_w_m, qkv_w_size},
+        {"qkv_b_m", d_qkv_b_m, qkv_b_size},
+        {"attn_proj_w_m", d_attn_proj_w_m, attn_proj_w_size},
+        {"attn_proj_b_m", d_attn_proj_b_m, attn_proj_b_size},
+        {"ln2_gamma_m", d_ln2_gamma_m, ln2_gamma_size},
+        {"ln2_beta_m", d_ln2_beta_m, ln2_beta_size},
+        {"mlp_w1_m", d_mlp_w1_m, mlp_w1_size},
+        {"mlp_b1_m", d_mlp_b1_m, mlp_b1_size},
+        {"mlp_w2_m", d_mlp_w2_m, mlp_w2_size},
+        {"mlp_b2_m", d_mlp_b2_m, mlp_b2_size},
+        {"token_emb_v", d_token_emb_v, token_emb_size},
+        {"pos_emb_v", d_pos_emb_v, pos_emb_size},
+        {"lm_w_v", d_lm_w_v, lm_w_size},
+        {"ln1_gamma_v", d_ln1_gamma_v, ln1_gamma_size},
+        {"ln1_beta_v", d_ln1_beta_v, ln1_beta_size},
+        {"qkv_w_v", d_qkv_w_v, qkv_w_size},
+        {"qkv_b_v", d_qkv_b_v, qkv_b_size},
+        {"attn_proj_w_v", d_attn_proj_w_v, attn_proj_w_size},
+        {"attn_proj_b_v", d_attn_proj_b_v, attn_proj_b_size},
+        {"ln2_gamma_v", d_ln2_gamma_v, ln2_gamma_size},
+        {"ln2_beta_v", d_ln2_beta_v, ln2_beta_size},
+        {"mlp_w1_v", d_mlp_w1_v, mlp_w1_size},
+        {"mlp_b1_v", d_mlp_b1_v, mlp_b1_size},
+        {"mlp_w2_v", d_mlp_w2_v, mlp_w2_size},
+        {"mlp_b2_v", d_mlp_b2_v, mlp_b2_size}
+    };
+
+    int start_step = 1;
+    if (runtime.resume) {
+        try {
+            int loaded_step = load_checkpoint(runtime.checkpoint_path, checkpoint_tensors);
+            start_step = loaded_step + 1;
+            if (rank == 0) {
+                std::cout << "Resumed checkpoint " << runtime.checkpoint_path
+                          << " from step " << loaded_step << std::endl;
+            }
+        } catch (const std::exception& ex) {
+            if (rank == 0) std::cerr << ex.what() << std::endl;
+            MPI_Finalize();
+            return 1;
+        }
+    }
 
     if (rank == 0) std::cout << "Starting training..." << std::endl;
 
@@ -1346,7 +1440,7 @@ int main(int argc, char** argv) {
 
     auto start_time = std::chrono::high_resolution_clock::now();
 
-    for (int step = 1; step <= max_steps; ++step) {
+    for (int step = start_step; step <= max_steps; ++step) {
         // ====================================================
         // Get batch
         // ====================================================
@@ -2130,21 +2224,21 @@ int main(int argc, char** argv) {
         // ====================================================
         // MPI AllReduce Gradients
         // ====================================================
-        all_reduce_gradients(d_token_emb_grad, token_emb_size, world_size);
-        all_reduce_gradients(d_pos_emb_grad, pos_emb_size, world_size);
-        all_reduce_gradients(d_lm_w_grad, lm_w_size, world_size);
-        all_reduce_gradients(d_ln1_gamma_grad, ln1_gamma_size, world_size);
-        all_reduce_gradients(d_ln1_beta_grad, ln1_beta_size, world_size);
-        all_reduce_gradients(d_qkv_w_grad, qkv_w_size, world_size);
-        all_reduce_gradients(d_qkv_b_grad, qkv_b_size, world_size);
-        all_reduce_gradients(d_attn_proj_w_grad, attn_proj_w_size, world_size);
-        all_reduce_gradients(d_attn_proj_b_grad, attn_proj_b_size, world_size);
-        all_reduce_gradients(d_ln2_gamma_grad, ln2_gamma_size, world_size);
-        all_reduce_gradients(d_ln2_beta_grad, ln2_beta_size, world_size);
-        all_reduce_gradients(d_mlp_w1_grad, mlp_w1_size, world_size);
-        all_reduce_gradients(d_mlp_b1_grad, mlp_b1_size, world_size);
-        all_reduce_gradients(d_mlp_w2_grad, mlp_w2_size, world_size);
-        all_reduce_gradients(d_mlp_b2_grad, mlp_b2_size, world_size);
+        all_reduce_gradients(d_token_emb_grad, token_emb_size, world_size, runtime.require_cuda_aware_mpi);
+        all_reduce_gradients(d_pos_emb_grad, pos_emb_size, world_size, runtime.require_cuda_aware_mpi);
+        all_reduce_gradients(d_lm_w_grad, lm_w_size, world_size, runtime.require_cuda_aware_mpi);
+        all_reduce_gradients(d_ln1_gamma_grad, ln1_gamma_size, world_size, runtime.require_cuda_aware_mpi);
+        all_reduce_gradients(d_ln1_beta_grad, ln1_beta_size, world_size, runtime.require_cuda_aware_mpi);
+        all_reduce_gradients(d_qkv_w_grad, qkv_w_size, world_size, runtime.require_cuda_aware_mpi);
+        all_reduce_gradients(d_qkv_b_grad, qkv_b_size, world_size, runtime.require_cuda_aware_mpi);
+        all_reduce_gradients(d_attn_proj_w_grad, attn_proj_w_size, world_size, runtime.require_cuda_aware_mpi);
+        all_reduce_gradients(d_attn_proj_b_grad, attn_proj_b_size, world_size, runtime.require_cuda_aware_mpi);
+        all_reduce_gradients(d_ln2_gamma_grad, ln2_gamma_size, world_size, runtime.require_cuda_aware_mpi);
+        all_reduce_gradients(d_ln2_beta_grad, ln2_beta_size, world_size, runtime.require_cuda_aware_mpi);
+        all_reduce_gradients(d_mlp_w1_grad, mlp_w1_size, world_size, runtime.require_cuda_aware_mpi);
+        all_reduce_gradients(d_mlp_b1_grad, mlp_b1_size, world_size, runtime.require_cuda_aware_mpi);
+        all_reduce_gradients(d_mlp_w2_grad, mlp_w2_size, world_size, runtime.require_cuda_aware_mpi);
+        all_reduce_gradients(d_mlp_b2_grad, mlp_b2_size, world_size, runtime.require_cuda_aware_mpi);
 
         // ====================================================
         // AdamW update
@@ -2479,9 +2573,32 @@ int main(int argc, char** argv) {
                           << std::endl;
             }
         }
+
+        if (runtime.save_every > 0 && step % runtime.save_every == 0) {
+            if (rank == 0) {
+                try {
+                    save_checkpoint(runtime.checkpoint_path, step, checkpoint_tensors);
+                    std::cout << "Saved checkpoint " << runtime.checkpoint_path
+                              << " at step " << step << std::endl;
+                } catch (const std::exception& ex) {
+                    std::cerr << ex.what() << std::endl;
+                    MPI_Abort(MPI_COMM_WORLD, 1);
+                }
+            }
+            MPI_Barrier(MPI_COMM_WORLD);
+        }
     }
 
     if (rank == 0) {
+        if (!runtime.checkpoint_path.empty() && runtime.save_every == 0) {
+            try {
+                save_checkpoint(runtime.checkpoint_path, max_steps, checkpoint_tensors);
+                std::cout << "Saved final checkpoint " << runtime.checkpoint_path << std::endl;
+            } catch (const std::exception& ex) {
+                std::cerr << ex.what() << std::endl;
+                MPI_Abort(MPI_COMM_WORLD, 1);
+            }
+        }
         auto end_time = std::chrono::high_resolution_clock::now();
         std::chrono::duration<float, std::milli> duration = end_time - start_time;
         std::cout << "Total training loop time: " << duration.count() << " ms" << std::endl;
@@ -2522,4 +2639,82 @@ int main(int argc, char** argv) {
 
     MPI_Finalize();
     return 0;
+}
+
+void save_checkpoint(
+    const std::string& path,
+    int step,
+    const std::vector<DeviceTensorRef>& tensors
+) {
+    std::ofstream out(path, std::ios::binary);
+    if (!out.is_open()) {
+        throw std::runtime_error("Could not open checkpoint for writing: " + path);
+    }
+
+    const char magic[8] = {'C', 'G', 'P', 'T', '2', 'C', 'K', '1'};
+    uint32_t version = 1;
+    uint32_t tensor_count = static_cast<uint32_t>(tensors.size());
+    write_or_throw(out, magic, sizeof(magic));
+    write_or_throw(out, &version, sizeof(version));
+    write_or_throw(out, &step, sizeof(step));
+    write_or_throw(out, &tensor_count, sizeof(tensor_count));
+
+    for (const DeviceTensorRef& tensor : tensors) {
+        uint32_t name_len = static_cast<uint32_t>(std::string(tensor.name).size());
+        uint32_t count = static_cast<uint32_t>(tensor.count);
+        std::vector<float> host(count);
+        CUDA_CHECK(cudaMemcpy(host.data(), tensor.ptr, count * sizeof(float), cudaMemcpyDeviceToHost));
+
+        write_or_throw(out, &name_len, sizeof(name_len));
+        write_or_throw(out, tensor.name, name_len);
+        write_or_throw(out, &count, sizeof(count));
+        write_or_throw(out, host.data(), count * sizeof(float));
+    }
+}
+
+int load_checkpoint(
+    const std::string& path,
+    const std::vector<DeviceTensorRef>& tensors
+) {
+    std::ifstream in(path, std::ios::binary);
+    if (!in.is_open()) {
+        throw std::runtime_error("Could not open checkpoint for reading: " + path);
+    }
+
+    char magic[8];
+    uint32_t version = 0;
+    int step = 0;
+    uint32_t tensor_count = 0;
+    read_or_throw(in, magic, sizeof(magic));
+    read_or_throw(in, &version, sizeof(version));
+    read_or_throw(in, &step, sizeof(step));
+    read_or_throw(in, &tensor_count, sizeof(tensor_count));
+
+    const std::string expected_magic = "CGPT2CK1";
+    if (std::string(magic, sizeof(magic)) != expected_magic || version != 1) {
+        throw std::runtime_error("Unsupported checkpoint format: " + path);
+    }
+    if (tensor_count != tensors.size()) {
+        throw std::runtime_error("Checkpoint tensor count does not match current model");
+    }
+
+    for (uint32_t i = 0; i < tensor_count; ++i) {
+        uint32_t name_len = 0;
+        uint32_t count = 0;
+        read_or_throw(in, &name_len, sizeof(name_len));
+        std::string name(name_len, '\0');
+        read_or_throw(in, &name[0], name_len);
+        read_or_throw(in, &count, sizeof(count));
+
+        const DeviceTensorRef& tensor = tensors[i];
+        if (name != tensor.name || count != static_cast<uint32_t>(tensor.count)) {
+            throw std::runtime_error("Checkpoint tensor mismatch at " + name);
+        }
+
+        std::vector<float> host(count);
+        read_or_throw(in, host.data(), count * sizeof(float));
+        CUDA_CHECK(cudaMemcpy(tensor.ptr, host.data(), count * sizeof(float), cudaMemcpyHostToDevice));
+    }
+
+    return step;
 }

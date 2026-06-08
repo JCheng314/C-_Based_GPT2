@@ -23,18 +23,66 @@ Distributed parallelisms (MPI Pipeline and Data Parallelism) will be integrated 
 .
 ├── Makefile                        # Build configurations for NVCC
 ├── include/
-│   └── transformer_kernels.h       # Shared macros, tile sizes, and kernel signatures
+�?  └── transformer_kernels.h       # Shared macros, tile sizes, and kernel signatures
 └── src/
-    ├── main.cu                     # Benchmark driver, CPU-GPU validation, and reporting
+    ├── benchmark.cu                # Benchmark driver, CPU-GPU validation, and reporting
     ├── cpu_reference.cpp           # CPU baseline math for correctness testing
     ├── linear_layers.cu            # Custom GEMM, Bias, Gelu, and Embeddings kernels
     ├── flash_attention.cu          # Tiled FlashAttention and QKV kernels
     └── fused_layernorm.cu          # Vectorized (float4) LayerNorm kernels
 ```
 
-## 🛠️ Build and Execution
+## 🛠�?Build and Execution
 
 This project requires an NVIDIA GPU and the CUDA Toolkit (specifically `nvcc`). It is designed to be compiled and run on the Stanford compute nodes (e.g., Pascal architecture).
+
+### Current Host Driver Notes
+
+The training drivers use `uint32` little-endian token files. `prepare_tinystories.py` writes this format, and all `train_step*.cu` loaders expect it.
+
+Build the benchmark and all training steps:
+
+```bash
+make
+```
+
+Useful focused targets:
+
+```bash
+make gpt2_benchmark
+make train_step4
+```
+
+Run the MPI Step 4 driver with configurable host-side settings:
+
+```bash
+mpirun -np 2 ./train_step4 ./data/tinystories/train.bin ./data/tinystories/val.bin \
+  --max-steps 2000 \
+  --eval-every 100 \
+  --eval-iters 10 \
+  --save-every 100 \
+  --checkpoint checkpoints/step4.ckpt
+```
+
+Resume from a saved checkpoint:
+
+```bash
+mpirun -np 2 ./train_step4 ./data/tinystories/train.bin ./data/tinystories/val.bin \
+  --resume \
+  --checkpoint checkpoints/step4.ckpt
+```
+
+If the cluster MPI is not CUDA-aware, add:
+
+```bash
+--allow-host-mpi-staging
+```
+
+Validate a saved Step 4 checkpoint with an independent NumPy forward baseline:
+
+```bash
+python scripts/baseline_step4_numpy.py checkpoints/step4.ckpt ./data/tinystories/val.bin
+```
 
 ### Compilation
 

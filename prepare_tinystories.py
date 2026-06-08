@@ -25,12 +25,15 @@ def write_bin(txt_path, bin_path):
 
     # Optional: append EOT once at the end.
     tokens.append(eot)
+    max_token = max(tokens)
+    if max_token > 0xFFFFFFFF:
+        raise ValueError(f"Token id {max_token} does not fit in uint32")
 
     print(f"{txt_path}: {len(tokens):,} tokens")
 
     with open(bin_path, "wb") as f:
         for token in tqdm(tokens):
-            f.write(struct.pack("<I", token))  # uint32 little-endian
+            f.write(struct.pack("<I", token))  # uint32 little-endian, matching train_step*.cu
 
 
 write_bin(train_txt, train_bin)

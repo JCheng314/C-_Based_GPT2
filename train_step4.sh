@@ -50,6 +50,6 @@ fi
 # Run training
 echo "Running Step 4 training with MPI..."
 
-mpirun -np 2 ./train_step4 ./data/tinystories/train.bin ./data/tinystories/val.bin
+mpirun -np 2 ./train_step4 ./data/tinystories/train.bin ./data/tinystories/val.bin "$@"
 
 echo "Job finished."

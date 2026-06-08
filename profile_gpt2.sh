@@ -34,7 +34,7 @@ mpirun -np 1 nsys profile \
     --trace=cuda,mpi,osrt \
     -o logs/nsys_1gpu_rank%q{OMPI_COMM_WORLD_RANK} \
     -f true \
-    ./train_step4 ./data/tinystories/train.bin ./data/tinystories/val.bin
+    ./train_step4 ./data/tinystories/train.bin ./data/tinystories/val.bin "$@"
 
 echo "=== Running Profile: 2 GPUs ==="
 # Profile 2-GPU execution (each rank gets its own profile)
@@ -42,6 +42,6 @@ mpirun -np 2 nsys profile \
     --trace=cuda,mpi,osrt \
     -o logs/nsys_2gpu_rank%q{OMPI_COMM_WORLD_RANK} \
     -f true \
-    ./train_step4 ./data/tinystories/train.bin ./data/tinystories/val.bin
+    ./train_step4 ./data/tinystories/train.bin ./data/tinystories/val.bin "$@"
 
 echo "=== Profiles generated successfully in logs/ ==="

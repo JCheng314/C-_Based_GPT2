@@ -1,31 +1,48 @@
 CXX = g++
 NVCC = nvcc
+MPICXX ?= mpicxx
 
 CXXFLAGS = -O3 -Wall -std=c++17
-NVCCFLAGS = -O3 -arch=sm_60 -std=c++17
+NVCCFLAGS ?= -O3 -arch=sm_75 -std=c++17
 
 INCLUDES = -I./include
 SRC_DIR = src
 
-# Object files
-OBJS = $(SRC_DIR)/fused_layernorm.o \
-       $(SRC_DIR)/flash_attention.o \
-       $(SRC_DIR)/linear_layers.o \
-       $(SRC_DIR)/cpu_reference.o \
-       $(SRC_DIR)/main.o
+COMMON_KERNELS = \
+	$(SRC_DIR)/linear_layers.cu \
+	$(SRC_DIR)/fused_layernorm.cu \
+	$(SRC_DIR)/flash_attention.cu \
+	$(SRC_DIR)/backward_kernels.cu
 
-TARGET = gpt2_benchmark
+BENCHMARK_SRCS = \
+	$(SRC_DIR)/benchmark.cu \
+	$(SRC_DIR)/linear_layers.cu \
+	$(SRC_DIR)/fused_layernorm.cu \
+	$(SRC_DIR)/flash_attention.cu \
+	$(SRC_DIR)/cpu_reference.cpp
 
-all: $(TARGET)
+.PHONY: all benchmark train clean
 
-$(TARGET): $(OBJS)
-	$(NVCC) $(NVCCFLAGS) -o $@ $^
+all: benchmark train
 
-$(SRC_DIR)/%.o: $(SRC_DIR)/%.cu
-	$(NVCC) $(NVCCFLAGS) $(INCLUDES) -c $< -o $@
+benchmark: gpt2_benchmark
 
-$(SRC_DIR)/%.o: $(SRC_DIR)/%.cpp
-	$(CXX) $(CXXFLAGS) $(INCLUDES) -c $< -o $@
+train: train_step1 train_step2 train_step3 train_step4
+
+gpt2_benchmark: $(BENCHMARK_SRCS)
+	$(NVCC) $(NVCCFLAGS) $(INCLUDES) $^ -o $@
+
+train_step1: $(SRC_DIR)/train_step1.cu $(SRC_DIR)/linear_layers.cu $(SRC_DIR)/backward_kernels.cu
+	$(NVCC) $(NVCCFLAGS) $(INCLUDES) $^ -o $@
+
+train_step2: $(SRC_DIR)/train_step2.cu $(SRC_DIR)/linear_layers.cu $(SRC_DIR)/fused_layernorm.cu $(SRC_DIR)/backward_kernels.cu
+	$(NVCC) $(NVCCFLAGS) $(INCLUDES) $^ -o $@
+
+train_step3: $(SRC_DIR)/train_step3.cu $(COMMON_KERNELS)
+	$(NVCC) $(NVCCFLAGS) $(INCLUDES) $^ -o $@
+
+train_step4: $(SRC_DIR)/train_step4.cu $(COMMON_KERNELS)
+	$(NVCC) $(NVCCFLAGS) -ccbin=$(MPICXX) $(INCLUDES) $^ -o $@
 
 clean:
-	rm -f $(SRC_DIR)/*.o $(TARGET)
+	rm -f $(SRC_DIR)/*.o gpt2_benchmark train_step1 train_step2 train_step3 train_step4
