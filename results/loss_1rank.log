@@ -1,0 +1,30 @@
+Loaded 482149336 tokens from ./data/tinystories/train.bin
+Loaded 4856451 tokens from ./data/tinystories/val.bin
+Model config:
+  B=2, T=64, C=64, V=50257
+  logits memory = 24.5396 MB
+Starting training...
+step 1 | train loss 10.8248 | valid loss 10.8244
+step 10 | train loss 10.8201 | valid loss 10.8193
+step 20 | train loss 10.7962 | valid loss 10.792
+step 30 | train loss 10.6669 | valid loss 10.6363
+step 40 | train loss 10.1591 | valid loss 9.99699
+step 50 | train loss 8.3648 | valid loss 8.32078
+step 60 | train loss 6.49165 | valid loss 6.68147
+step 70 | train loss 7.77127 | valid loss 6.79018
+step 80 | train loss 6.18523 | valid loss 6.38381
+step 90 | train loss 6.30591 | valid loss 6.43158
+step 100 | train loss 6.62309 | valid loss 6.44704
+step 110 | train loss 6.03434 | valid loss 6.36639
+step 120 | train loss 6.03269 | valid loss 6.47034
+step 130 | train loss 6.41945 | valid loss 6.29115
+step 140 | train loss 6.25135 | valid loss 6.12942
+step 150 | train loss 5.72876 | valid loss 6.40129
+step 160 | train loss 6.03471 | valid loss 6.34638
+step 170 | train loss 6.44711 | valid loss 6.14409
+step 180 | train loss 6.23868 | valid loss 6.13375
+step 190 | train loss 5.98477 | valid loss 6.23041
+step 200 | train loss 5.95797 | valid loss 6.07849
+Total training loop time: 5954.59 ms
+Average time per step: 29.7729 ms
+Training finished.

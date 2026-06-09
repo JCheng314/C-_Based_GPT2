@@ -1,0 +1,10 @@
+Loaded 482149336 tokens from ./data/tinystories/train.bin
+Loaded 4856451 tokens from ./data/tinystories/val.bin
+Model config:
+  B=2, T=64, C=64, V=50257
+  logits memory = 24.5396 MB
+Starting training...
+step 1 | train loss 10.8248 | valid loss 10.8244
+Total training loop time: 1124.68 ms
+Average time per step: 22.4936 ms
+Training finished.

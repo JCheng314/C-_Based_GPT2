@@ -11,5 +11,5 @@
 set -e
 
 echo "Starting data preparation..."
-/home/cme213/mili1/miniconda3/bin/python prepare_tinystories.py
+/home/cme213/stephone/miniconda3/bin/python prepare_tinystories.py
 echo "Data preparation complete."
