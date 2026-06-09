@@ -1,0 +1,4 @@
+Generating SQLite file nsys_2gpu_rank0.sqlite from nsys_2gpu_rank0.nsys-rep
+Processing [nsys_2gpu_rank0.sqlite] with [mpi_gpu_sum]... 
+ERROR: Report 'mpi_gpu_sum' could not be found.
+

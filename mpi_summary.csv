@@ -1,0 +1,6 @@
+
+NOTICE: Existing SQLite export found: nsys_2gpu_rank0.sqlite
+        It is assumed file was previously exported from: nsys_2gpu_rank0.nsys-rep
+        Consider using --force-export=true if needed.
+
+Processing [nsys_2gpu_rank0.sqlite] with [mpi_sum]... 

@@ -1440,7 +1440,23 @@ int main(int argc, char** argv) {
 
     auto start_time = std::chrono::high_resolution_clock::now();
 
+    // ----------------------------
+    // CUDA event timing for comm vs compute breakdown
+    // ----------------------------
+    cudaEvent_t ev_step_start, ev_compute_end, ev_comm_end, ev_optim_end;
+    CUDA_CHECK(cudaEventCreate(&ev_step_start));
+    CUDA_CHECK(cudaEventCreate(&ev_compute_end));
+    CUDA_CHECK(cudaEventCreate(&ev_comm_end));
+    CUDA_CHECK(cudaEventCreate(&ev_optim_end));
+
+    float total_compute_ms = 0.0f;
+    float total_comm_ms = 0.0f;
+    float total_optim_ms = 0.0f;
+    int timed_steps = 0;
+
     for (int step = start_step; step <= max_steps; ++step) {
+        // Record step start
+        CUDA_CHECK(cudaEventRecord(ev_step_start));
         // ====================================================
         // Get batch
         // ====================================================
@@ -2220,6 +2236,10 @@ int main(int argc, char** argv) {
         );
 
         CUDA_CHECK(cudaGetLastError());
+        CUDA_CHECK(cudaDeviceSynchronize());
+
+        // Record end of compute (forward + backward)
+        CUDA_CHECK(cudaEventRecord(ev_compute_end));
 
         // ====================================================
         // MPI AllReduce Gradients
@@ -2239,6 +2259,9 @@ int main(int argc, char** argv) {
         all_reduce_gradients(d_mlp_b1_grad, mlp_b1_size, world_size, runtime.require_cuda_aware_mpi);
         all_reduce_gradients(d_mlp_w2_grad, mlp_w2_size, world_size, runtime.require_cuda_aware_mpi);
         all_reduce_gradients(d_mlp_b2_grad, mlp_b2_size, world_size, runtime.require_cuda_aware_mpi);
+
+        // Record end of communication
+        CUDA_CHECK(cudaEventRecord(ev_comm_end));
 
         // ====================================================
         // AdamW update
@@ -2495,6 +2518,22 @@ int main(int argc, char** argv) {
         CUDA_CHECK(cudaGetLastError());
         CUDA_CHECK(cudaDeviceSynchronize());
 
+        // Record end of optimizer
+        CUDA_CHECK(cudaEventRecord(ev_optim_end));
+        CUDA_CHECK(cudaEventSynchronize(ev_optim_end));
+
+        // Accumulate per-step timing
+        {
+            float compute_ms = 0.0f, comm_ms = 0.0f, optim_ms = 0.0f;
+            CUDA_CHECK(cudaEventElapsedTime(&compute_ms, ev_step_start, ev_compute_end));
+            CUDA_CHECK(cudaEventElapsedTime(&comm_ms, ev_compute_end, ev_comm_end));
+            CUDA_CHECK(cudaEventElapsedTime(&optim_ms, ev_comm_end, ev_optim_end));
+            total_compute_ms += compute_ms;
+            total_comm_ms += comm_ms;
+            total_optim_ms += optim_ms;
+            timed_steps++;
+        }
+
         // ====================================================
         // Print training and validation loss
         // ====================================================
@@ -2603,7 +2642,23 @@ int main(int argc, char** argv) {
         std::chrono::duration<float, std::milli> duration = end_time - start_time;
         std::cout << "Total training loop time: " << duration.count() << " ms" << std::endl;
         std::cout << "Average time per step: " << duration.count() / max_steps << " ms" << std::endl;
+
+        // Print detailed timing breakdown
+        std::cout << "\n=== Per-Step Timing Breakdown (" << timed_steps << " steps) ===" << std::endl;
+        std::cout << "  Compute (fwd+bwd):  " << total_compute_ms / timed_steps << " ms/step  ("
+                  << 100.0f * total_compute_ms / (total_compute_ms + total_comm_ms + total_optim_ms) << "%)" << std::endl;
+        std::cout << "  Communication:      " << total_comm_ms / timed_steps << " ms/step  ("
+                  << 100.0f * total_comm_ms / (total_compute_ms + total_comm_ms + total_optim_ms) << "%)" << std::endl;
+        std::cout << "  Optimizer (AdamW):  " << total_optim_ms / timed_steps << " ms/step  ("
+                  << 100.0f * total_optim_ms / (total_compute_ms + total_comm_ms + total_optim_ms) << "%)" << std::endl;
+        std::cout << "  Total (GPU timed):  " << (total_compute_ms + total_comm_ms + total_optim_ms) / timed_steps << " ms/step" << std::endl;
     }
+
+    // Cleanup timing events
+    cudaEventDestroy(ev_step_start);
+    cudaEventDestroy(ev_compute_end);
+    cudaEventDestroy(ev_comm_end);
+    cudaEventDestroy(ev_optim_end);
 
     // ----------------------------
     // Free memory

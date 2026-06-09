@@ -1,0 +1,20 @@
+Generating SQLite file nsys_2gpu_rank0.sqlite from nsys_2gpu_rank0.nsys-rep
+Processing [nsys_2gpu_rank0.sqlite] with [/home/cme213/software/nvidia-hpc-sdk/2024_24.1/Linux_x86_64/24.1/profilers/Nsight_Systems/host-linux-x64/reports/cuda_api_sum.py]... 
+Time (%),Total Time (ns),Num Calls,Avg (ns),Med (ns),Min (ns),Max (ns),StdDev (ns),Name
+48.8,29460617109,105572,279057.1,6492.0,1904,12560206,1283571.3,cudaDeviceSynchronize
+48.6,29307739302,60000,488462.3,9257.0,2615,23546156,1439649.7,cuMemcpyAsync
+1.7,1006424633,215633,4667.3,3918.0,3266,8238804,19381.5,cudaLaunchKernel
+0.9,514353941,60000,8572.6,3707.0,622,3895130,25899.6,cuStreamSynchronize
+0.1,37718001,4666,8083.6,6978.5,4198,1620293,30236.4,cudaMemcpy
+0.0,4074864,1200,3395.7,360.0,230,3500690,101043.9,cuEventCreate
+0.0,2895567,99,29248.2,2916.0,1793,528936,78666.7,cudaMalloc
+0.0,425877,1200,354.9,261.0,180,2104,227.1,cuEventDestroy_v2
+0.0,384672,1,384672.0,384672.0,384672,384672,0.0,cuMemHostRegister_v2
+0.0,280553,18,15586.3,6702.5,4839,161587,36488.9,cudaFree
+0.0,272719,1,272719.0,272719.0,272719,272719,0.0,cuMemHostUnregister
+0.0,140824,405,347.7,300.0,150,6322,367.2,cuGetProcAddress_v2
+0.0,35246,4,8811.5,4017.5,2705,24506,10492.4,cuStreamCreate
+0.0,25588,4,6397.0,3496.5,3186,15409,6010.1,cuStreamDestroy_v2
+0.0,4930,1,4930.0,4930.0,4930,4930,0.0,cuInit
+0.0,4488,2,2244.0,2244.0,240,4248,2834.1,cuModuleGetLoadingMode
+
